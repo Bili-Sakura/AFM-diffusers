@@ -1,5 +1,5 @@
 __object__:
-  path: models.afm.dit.vae
+  path: diffusers.models.afm.vae
   name: AutoencoderKLWrapper
   args: as_params
 

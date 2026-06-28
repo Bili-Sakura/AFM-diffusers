@@ -1,5 +1,5 @@
 __object__:
-  path: models.afm.dit.generator
+  path: diffusers.models.afm.generator
   name: Generator
   args: as_params
 

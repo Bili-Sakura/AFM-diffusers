@@ -33,7 +33,7 @@ gen:
   model:
     __inherit__: configs/models/afm/dit/${exp.gen}.yaml
     __object__:
-      path: models.afm.dit.generator_deep # Switch to use deep architecture
+      path: diffusers.models.afm.generator_deep # Switch to use deep architecture
       name: GeneratorDeep
     repeat: ${exp.depth}
   pred_type: ${exp.pred}
@@ -43,7 +43,7 @@ dis:
   model:
     __inherit__: configs/models/afm/dit/${exp.dis}.yaml
     __object__:
-      path: models.afm.dit.discriminator
+      path: diffusers.models.afm.discriminator
       name: Discriminator
       args: as_params
   checkpoint: Null

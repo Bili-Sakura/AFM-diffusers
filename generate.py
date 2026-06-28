@@ -1,17 +1,20 @@
 """
-This generate.py is only for AFMs.
-CAFMs should use the official sampling code from SiT/JiT.
+Generation entrypoint for AFM and CAFM models using native diffusers pipelines.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 import datetime
 import os
+
 import torch
-from torch import Tensor
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
 
-from common.config import create_object
+from common.config import create_object, load_config
 from common.decorators import barrier_on_entry, log_on_entry
 from common.distributed import (
     get_device,
@@ -24,57 +27,74 @@ from common.entrypoint import Entrypoint
 from common.fs import download, mkdir
 from common.partition import partition_by_groups
 from common.seed import set_seed
+from diffusers.pipelines.afm.pipeline_afm import AFMPipeline
+from diffusers.pipelines.cafm.pipeline_cafm_jit import CAFMJiTPipeline
+from diffusers.pipelines.cafm.pipeline_cafm_sit import CAFMSiTPipeline
+from diffusers.schedulers.scheduling_continuous_flow import ContinuousFlowMatchScheduler
 
 
 class AdversarialFlowGenerator(Entrypoint):
     def entrypoint(self):
         init_torch(cudnn_benchmark=False, timeout=datetime.timedelta(seconds=3600))
         self.configure_seed()
-        self.configure_models()
+        self.configure_pipeline()
         self.configure_seed()
         self.inference_loop()
-
-    # ----------------------------- Determinism ----------------------------- #
 
     def configure_seed(self):
         set_seed(self.config.generation.seed)
 
-    # -------------------------------- Model -------------------------------- #
-
-    def configure_models(self):
-        self.configure_gen_model()
-        self.configure_vae_model()
-
     @log_on_entry
-    def configure_gen_model(self, device=get_device()):
-        # Create gen model.
+    def configure_pipeline(self, device=get_device()):
         self.gen = create_object(self.config.gen.model).to(device)
-
-        # Load gen checkpoint.
         checkpoint = self.config.gen.get("checkpoint", None)
         if checkpoint:
             state = torch.load(download(checkpoint), map_location=device)
             self.gen.load_state_dict(state, strict=self.config.gen.get("strict", True))
 
-    @log_on_entry
-    def configure_vae_model(self):
-        # Create vae model.
-        dtype = getattr(torch, self.config.vae.dtype)
-        self.vae = create_object(self.config.vae.model)
-        self.vae.requires_grad_(False).eval()
-        self.vae.to(device=get_device(), dtype=dtype)
+        object_path = self.config.gen.model.__object__.path
+        scheduler = ContinuousFlowMatchScheduler(
+            solver=self.config.generation.get("sampler", "euler"),
+        )
 
-        # Load vae checkpoint.
-        if self.config.vae.get("checkpoint"):
-            state = torch.load(download(self.config.vae.checkpoint), map_location=get_device())
-            self.vae.load_state_dict(state, strict=True)
+        if self.config.get("vae"):
+            dtype = getattr(torch, self.config.vae.dtype)
+            vae = create_object(self.config.vae.model)
+            vae.requires_grad_(False).eval().to(device=device, dtype=dtype)
+            if self.config.vae.get("checkpoint"):
+                state = torch.load(download(self.config.vae.checkpoint), map_location=device)
+                vae.load_state_dict(state, strict=True)
+            if self.config.vae.compile:
+                vae.encode = torch.compile(vae.encode)
+                vae.decode = torch.compile(vae.decode)
 
-        # Compile vae if needed.
-        if self.config.vae.compile:
-            self.vae.encode = torch.compile(self.vae.encode)
-            self.vae.decode = torch.compile(self.vae.decode)
+            if "cafm.sit" in object_path:
+                self.pipeline = CAFMSiTPipeline(
+                    generator=self.gen,
+                    vae=vae,
+                    scheduler=scheduler,
+                ).to(device)
+                latent_size = int(getattr(self.gen.config, "input_size", 32))
+                self.latent_shape = (int(self.gen.config.in_channels), latent_size, latent_size)
+            else:
+                self.pipeline = AFMPipeline(
+                    generator=self.gen,
+                    vae=vae,
+                    scheduler=scheduler,
+                    pred_type=self.config.gen.get("pred_type", "x"),
+                ).to(device)
+                latent_size = int(getattr(self.gen.transformer.config, "sample_size", 32))
+                in_channels = int(getattr(self.gen, "in_channels", 4))
+                self.latent_shape = (in_channels, latent_size, latent_size)
+        else:
+            self.pipeline = CAFMJiTPipeline(
+                generator=self.gen,
+                scheduler=scheduler,
+            ).to(device)
+            resolution = int(self.config.generation.get("resolution", getattr(self.gen, "sample_size", 256)))
+            self.latent_shape = (3, resolution, resolution)
 
-    # ------------------------------ Inference ------------------------------- #
+        self.pipeline.set_progress_bar_config(disable=get_local_rank() != 0)
 
     @barrier_on_entry
     @torch.no_grad()
@@ -87,46 +107,50 @@ class AdversarialFlowGenerator(Entrypoint):
         labels = partition_by_groups(labels, get_world_size())[get_global_rank()]
 
         device = get_device()
-
-        for (i, label) in tqdm(labels, position=get_local_rank()):
-            noise = torch.randn([1, 4, 32, 32], device=device, generator=torch.Generator("cuda").manual_seed(i + self.config.generation.seed))
-            label = torch.tensor([label], device=device, dtype=torch.long)
-            sample = self.inference(noise, label)
-            to_pil_image(sample.mul(0.5).add(0.5).clamp(0, 1)[0]).save(os.path.join(output, f"{i:05}.png"))
-
-    @torch.no_grad()
-    def vae_decode(self, latents: Tensor) -> Tensor:
-        dtype = getattr(torch, self.config.vae.dtype)
-        scale = self.config.vae.scaling_factor
-        latents = latents.to(dtype)
-        latents = latents / scale
-        samples = self.vae.decode(latents).sample
-        return samples.float()
-
-    @torch.no_grad()
-    def inference(
-        self,
-        noises: Tensor,
-        labels: Tensor,
-    ) -> Tensor:
         steps = self.config.generation.steps
+        sampler = self.config.generation.get("sampler", "euler")
 
-        device = noises.device
-        timesteps = torch.linspace(1.0, 0.0, steps+1, device=device)
+        for i, label in tqdm(labels, position=get_local_rank()):
+            generator = torch.Generator(device=device).manual_seed(i + self.config.generation.seed)
+            class_labels = torch.tensor([label], device=device, dtype=torch.long)
+            noises = torch.randn(
+                [1, *self.latent_shape],
+                device=device,
+                generator=generator,
+            )
 
-        model = self.ema if hasattr(self, "ema") else self.gen
-        model.eval()
-
-        latents = noises
-        for timesteps_src, timesteps_tgt in zip(timesteps[:-1], timesteps[1:]):
-            timesteps_src = timesteps_src.repeat(len(noises))
-            timesteps_tgt = timesteps_tgt.repeat(len(noises))
-            outputs = model(latents, labels, timesteps_src, timesteps_tgt)
-            if self.config.gen.get("pred_type") == "v":
-                latents = latents - (timesteps_src - timesteps_tgt).view(-1, 1, 1, 1) * outputs
+            if isinstance(self.pipeline, CAFMJiTPipeline):
+                result = self.pipeline(
+                    class_labels=class_labels,
+                    num_inference_steps=steps,
+                    sampler=sampler,
+                    latents=noises,
+                    output_type="pt",
+                    generator=generator,
+                )
+                sample = result.images[0]
             else:
-                latents = outputs
+                result = self.pipeline(
+                    class_labels=class_labels,
+                    num_inference_steps=steps,
+                    sampler=sampler,
+                    latents=noises,
+                    output_type="pt",
+                    generator=generator,
+                )
+                sample = result.images[0]
 
-        model.train()
-        samples = self.vae_decode(latents)
-        return samples
+            to_pil_image(sample.mul(0.5).add(0.5).clamp(0, 1)).save(os.path.join(output, f"{i:05}.png"))
+
+
+def main():
+    from sys import argv
+
+    config = load_config(argv[1], argv[2:])
+    entrypoint = create_object(config)
+    assert isinstance(entrypoint, AdversarialFlowGenerator)
+    entrypoint.entrypoint()
+
+
+if __name__ == "__main__":
+    main()

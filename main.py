@@ -4,7 +4,11 @@ The first argument must be a yaml training configuration file path.
 The additional arguments support commandline override.
 """
 
+import sys
+from pathlib import Path
 from sys import argv
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from common.config import create_object, load_config
 from common.entrypoint import Entrypoint
