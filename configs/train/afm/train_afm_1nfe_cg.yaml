@@ -38,8 +38,8 @@ dis:
   model:
     __inherit__: configs/models/afm/dit/${exp.dis}.yaml
     __object__:
-      path: models.afm.dit.discriminator
-      name: Discriminator
+      path: diffusers.models.transformers.transformer_afm
+      name: AFMDiscriminatorModel
       args: as_params
   checkpoint: Null # Replace with last dis ckpt.
 
@@ -59,8 +59,8 @@ cls:  # Add classifier config.
   model:
     __inherit__: configs/models/afm/dit/b2.yaml
     __object__:
-      path: models.afm.dit.classifier
-      name: Classifier
+      path: diffusers.models.transformers.transformer_afm
+      name: AFMClassifierModel
   checkpoint: classifier.pth
   compile: True
 

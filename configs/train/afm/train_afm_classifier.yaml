@@ -1,6 +1,6 @@
 __object__:
   path: train_adversarial_flow_classifier
-  name: ClassifierTrainer
+  name: AFMClassifierModelTrainer
 
 exp:
   model: b2
@@ -24,8 +24,8 @@ cls:
   model:
     __inherit__: configs/models/afm/dit/${exp.model}.yaml
     __object__:
-      path: models.afm.dit.classifier
-      name: Classifier
+      path: diffusers.models.transformers.transformer_afm
+      name: AFMClassifierModel
 
 ema:
   decay: 0.9995

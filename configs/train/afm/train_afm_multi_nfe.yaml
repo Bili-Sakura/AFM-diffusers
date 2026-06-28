@@ -40,8 +40,8 @@ dis:
   model:
     __inherit__: configs/models/afm/dit/${exp.dis}.yaml
     __object__:
-      path: models.afm.dit.discriminator
-      name: Discriminator
+      path: diffusers.models.transformers.transformer_afm
+      name: AFMDiscriminatorModel
       args: as_params
     use_t: True      # Needed for multi-step models.
   checkpoint: Null

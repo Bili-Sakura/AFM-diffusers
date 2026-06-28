@@ -1,6 +1,6 @@
 __object__:
-  path: models.cafm.jit.generator
-  name: Generator
+  path: diffusers.models.transformers.transformer_cafm_jit
+  name: AFMGeneratorModel
   args: as_params
 
 depth: 32

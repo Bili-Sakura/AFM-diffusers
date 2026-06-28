@@ -1,6 +1,6 @@
 __object__:
-  path: models.afm.dit.generator
-  name: Generator
+  path: diffusers.models.transformers.transformer_afm
+  name: AFMGeneratorModel
   args: as_params
 
 depth: 24

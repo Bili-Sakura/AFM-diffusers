@@ -1,6 +1,7 @@
 from typing import NamedTuple
+
 import torch
-from diffusers import AutoencoderKL
+from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from diffusers.utils.accelerate_utils import apply_forward_hook
 
@@ -21,21 +22,11 @@ class DecoderOutput(NamedTuple):
 
 class AutoencoderKLWrapper(AutoencoderKL):
     def load_state_dict(self, state_dict, *args, **kwargs):
-        # Newer version of diffusers changed the model keys.
-        # This causes incompatibility with old checkpoints.
-        # They provided a method for conversion.
-        # We call conversion before loading state_dict.
         self._convert_deprecated_attention_blocks(state_dict)
         return super().load_state_dict(state_dict, *args, **kwargs)
 
     @apply_forward_hook
     def encode(self, x: torch.FloatTensor, sample_posterior: bool = True) -> EncoderOutput:
-        """
-        Encode a batch of images into latents.
-
-        Args:
-            x (`torch.FloatTensor`): Input batch of images.
-        """
         if self.use_tiling and (
             x.shape[-1] > self.tile_sample_min_size or x.shape[-2] > self.tile_sample_min_size
         ):
@@ -57,16 +48,7 @@ class AutoencoderKLWrapper(AutoencoderKL):
         return EncoderOutput(latent=latent, posterior=posterior)
 
     @apply_forward_hook
-    def decode(
-        self,
-        z: torch.FloatTensor,
-    ) -> DecoderOutput:
-        """
-        Decode a batch of images.
-
-        Args:
-            z (`torch.FloatTensor`): Input batch of latent vectors.
-        """
+    def decode(self, z: torch.FloatTensor) -> DecoderOutput:
         if self.use_slicing and z.shape[0] > 1:
             decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
             decoded = torch.cat(decoded_slices)
@@ -74,17 +56,7 @@ class AutoencoderKLWrapper(AutoencoderKL):
             decoded = self._decode(z).sample
         return DecoderOutput(sample=decoded)
 
-    def forward(
-        self,
-        x: torch.FloatTensor,
-        sample_posterior: bool = False,
-    ) -> AutoencoderOutput:
-        r"""
-        Args:
-            x (`torch.FloatTensor`): Input sample.
-            sample_posterior (`bool`, *optional*, defaults to `False`):
-                Whether to sample from the posterior.
-        """
+    def forward(self, x: torch.FloatTensor, sample_posterior: bool = False) -> AutoencoderOutput:
         latent, posterior = self.encode(x, sample_posterior=sample_posterior)
         sample = self.decode(latent).sample
         return AutoencoderOutput(sample=sample, posterior=posterior)

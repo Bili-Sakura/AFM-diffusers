@@ -6,6 +6,8 @@ import importlib
 from typing import Any, Callable, List, Union
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from common import diffusers_ext  # noqa: F401
+
 
 OmegaConf.register_new_resolver("eval", eval)
 

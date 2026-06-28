@@ -35,8 +35,8 @@ dis:
   model:
     __inherit__: configs/models/cafm/sit/${exp.dis}.yaml
     __object__:
-      path: models.cafm.sit.discriminator
-      name: Discriminator
+      path: diffusers.models.transformers.transformer_cafm_sit
+      name: AFMDiscriminatorModel
     norm_type: rms
   checkpoint: ./SiT-XL-2-256.pt
   strict: False

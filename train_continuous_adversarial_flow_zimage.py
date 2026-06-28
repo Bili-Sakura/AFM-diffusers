@@ -47,7 +47,7 @@ from common.persistence import PersistenceMixin
 from common.seed import set_seed, shift_seed
 from common.writers import WriterMixin
 from data.t2i_transforms import AreaResize, DivisibleCrop
-from models.cafm.zimage.discriminator import ZImageTransformer2DModelDiscriminatorJVP
+from diffusers.models.transformers.transformer_cafm_zimage import ZImageTransformer2DModelDiscriminatorJVP
 
 class ContinuousAdversarialFlowTrainer(Entrypoint, PersistenceMixin, WriterMixin):
     def entrypoint(self):

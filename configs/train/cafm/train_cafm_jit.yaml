@@ -35,8 +35,8 @@ dis:
   model:
     __inherit__: configs/models/cafm/jit/${exp.dis}.yaml
     __object__:
-      path: models.cafm.jit.discriminator
-      name: Discriminator
+      path: diffusers.models.transformers.transformer_cafm_jit
+      name: AFMDiscriminatorModel
   checkpoint: ./JiT-H-16-256-ema0.9999.pth
   strict: False
 

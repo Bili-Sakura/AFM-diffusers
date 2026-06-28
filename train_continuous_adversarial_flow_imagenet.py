@@ -31,7 +31,7 @@ from common.persistence import PersistenceMixin
 from common.seed import set_seed, shift_seed
 from common.writers import WriterMixin
 from data.imagenet_resize import ImageNetResizeCrop
-from models.cafm.jvp.discriminator import DiscriminatorJVP
+from diffusers.models.discriminators.jvp_discriminator import DiscriminatorJVP
 
 torch.backends.cuda.enable_math_sdp(True)
 torch.backends.cuda.enable_flash_sdp(False)

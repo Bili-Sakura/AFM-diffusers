@@ -1,5 +1,5 @@
 __object__:
-  path: models.cafm.sit.vae
+  path: diffusers.models.autoencoders.autoencoder_kl_wrapper
   name: AutoencoderKLWrapper
   args: as_params
 
