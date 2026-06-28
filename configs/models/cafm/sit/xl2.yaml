@@ -1,5 +1,5 @@
 __object__:
-  path: models.cafm.sit.generator
+  path: diffusers.models.cafm.sit.generator
   name: Generator
   args: as_params
 

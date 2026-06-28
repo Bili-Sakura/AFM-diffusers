@@ -1,7 +1,13 @@
 """
-This generate.py is only for AFMs.
-CAFMs should use the official sampling code from SiT/JiT.
+Generation entrypoint for AFM models.
+
+CAFM sampling is available through the diffusers pipelines in `src/diffusers/pipelines/`.
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 
 import datetime

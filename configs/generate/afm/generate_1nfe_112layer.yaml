@@ -6,7 +6,7 @@ gen:
   model:
     __inherit__: configs/models/afm/dit/xl2.yaml
     __object__:
-      path: models.afm.dit.generator_deep # Switch to use deep architecture
+      path: diffusers.models.afm.generator_deep # Switch to use deep architecture
       name: GeneratorDeep
     repeat: 4
   checkpoint: xl2_112layer_1nfe_guided_FID1.94.pth

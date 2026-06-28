@@ -24,7 +24,7 @@ cls:
   model:
     __inherit__: configs/models/afm/dit/${exp.model}.yaml
     __object__:
-      path: models.afm.dit.classifier
+      path: diffusers.models.afm.classifier
       name: Classifier
 
 ema:

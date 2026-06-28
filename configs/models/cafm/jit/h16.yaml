@@ -1,5 +1,5 @@
 __object__:
-  path: models.cafm.jit.generator
+  path: diffusers.models.cafm.jit.generator
   name: Generator
   args: as_params
 
