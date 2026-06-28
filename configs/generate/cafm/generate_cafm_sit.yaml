@@ -1,0 +1,24 @@
+__object__:
+  path: generate
+  name: AdversarialFlowGenerator
+
+gen:
+  model:
+    __inherit__: configs/models/cafm/sit/xl2.yaml
+  checkpoint: ./cafm_sit_checkpoint.pth
+  strict: True
+
+vae:
+  model:
+    __inherit__: configs/models/cafm/sit/vae.yaml
+  checkpoint: ./sd-vae-ft-mse.pth
+  scaling_factor: 0.18215
+  compile: False
+  dtype: float32
+
+generation:
+  seed: 0
+  steps: 250
+  sampler: heun
+  resolution: 256
+  output: output/cafm_sit_samples

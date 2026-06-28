@@ -3,13 +3,22 @@ from pkgutil import extend_path
 
 __path__ = extend_path(__path__, __name__)
 
+import importlib
+
+importlib.import_module(f"{__name__}.schedulers.scheduling_continuous_flow")
+importlib.import_module(f"{__name__}.schedulers.scheduling_jit")
+
 try:
     __version__ = _package_version("diffusers")
 except Exception:
     __version__ = "0.0.0"
 
 __all__ = [
+    "AFMPipeline",
     "Classifier",
+    "CAFMJiTPipeline",
+    "CAFMSiTPipeline",
+    "ContinuousFlowMatchScheduler",
     "DIT_MODEL_PRESETS",
     "DiTPipeline",
     "DiTTransformer2DModel",
@@ -33,6 +42,22 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name in {"AFMPipeline", "CAFMSiTPipeline", "CAFMJiTPipeline", "ContinuousFlowMatchScheduler"}:
+        if name == "AFMPipeline":
+            from .pipelines.afm.pipeline_afm import AFMPipeline
+
+            return AFMPipeline
+        if name == "CAFMSiTPipeline":
+            from .pipelines.cafm.pipeline_cafm_sit import CAFMSiTPipeline
+
+            return CAFMSiTPipeline
+        if name == "CAFMJiTPipeline":
+            from .pipelines.cafm.pipeline_cafm_jit import CAFMJiTPipeline
+
+            return CAFMJiTPipeline
+        from .schedulers.scheduling_continuous_flow import ContinuousFlowMatchScheduler
+
+        return ContinuousFlowMatchScheduler
     if name in {"SiTTransformer2DModel", "SiTPipeline"}:
         if name == "SiTTransformer2DModel":
             from .models.transformers.transformer_sit import SiTTransformer2DModel

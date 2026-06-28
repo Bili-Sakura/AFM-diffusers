@@ -1,0 +1,16 @@
+__object__:
+  path: generate
+  name: AdversarialFlowGenerator
+
+gen:
+  model:
+    __inherit__: configs/models/cafm/jit/h16.yaml
+  checkpoint: ./jit.pth
+  strict: True
+
+generation:
+  seed: 0
+  steps: 50
+  sampler: heun
+  resolution: 256
+  output: output/cafm_jit_samples

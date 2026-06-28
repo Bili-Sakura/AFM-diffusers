@@ -19,6 +19,25 @@ Model implementations live under [`src/diffusers`](src/diffusers) and extend the
 - **JiT** (CAFM): [`JiT-diffusers`](https://github.com/Bili-Sakura/JiT-diffusers) native `JiTTransformer2DModel`
 - **Z-Image** (CAFM T2I): diffusers `ZImageTransformer2DModel` with JVP discriminator
 
+### Pipelines
+
+| Pipeline | Model | Space |
+|----------|-------|-------|
+| `AFMPipeline` | AFM `Generator` / `GeneratorDeep` | Latent + VAE |
+| `CAFMSiTPipeline` | CAFM SiT `Generator` | Latent + VAE |
+| `CAFMJiTPipeline` | CAFM JiT `Generator` | Pixel |
+| `SiTPipeline` | Native `SiTTransformer2DModel` | Latent + VAE |
+| `DiTPipeline` | Native `DiTTransformer2DModel` | Latent + VAE |
+| `JiTPipeline` | Native `JiTTransformer2DModel` | Pixel |
+
+```python
+from diffusers.pipelines.afm import AFMPipeline
+from diffusers.models.afm.generator import Generator
+
+pipe = AFMPipeline(generator=gen, vae=vae, pred_type="x").to("cuda")
+image = pipe(class_labels=207, num_inference_steps=1).images[0]
+```
+
 AFM model classes are under `diffusers.models.afm.*`. CAFM model classes are under `diffusers.models.cafm.*`.
 
 ## Colab Notebooks

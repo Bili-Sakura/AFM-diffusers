@@ -23,11 +23,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
-from ...image_processor import VaeImageProcessor
-from ...schedulers import KarrasDiffusionSchedulers
-from ...utils import replace_example_docstring
-from ...utils.torch_utils import randn_tensor
-from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput
+from ..._hf import get_hf_attr
+
+VaeImageProcessor = get_hf_attr("diffusers.image_processor.VaeImageProcessor")
+KarrasDiffusionSchedulers = get_hf_attr("diffusers.schedulers.KarrasDiffusionSchedulers")
+replace_example_docstring = get_hf_attr("diffusers.utils.replace_example_docstring")
+randn_tensor = get_hf_attr("diffusers.utils.torch_utils.randn_tensor")
+DiffusionPipeline = get_hf_attr("diffusers.pipelines.pipeline_utils.DiffusionPipeline")
+ImagePipelineOutput = get_hf_attr("diffusers.pipelines.pipeline_utils.ImagePipelineOutput")
 
 EXAMPLE_DOC_STRING = """
     Examples:
