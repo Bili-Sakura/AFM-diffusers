@@ -1,45 +1,12 @@
 from __future__ import annotations
 
-import importlib
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 import torch
-
-_LOCAL_SRC = Path(__file__).resolve().parents[2]
-
-
-def _load_upstream_attr(module_path: str, attr_name: str):
-    stashed = {}
-    for name in list(sys.modules):
-        if not (name == "diffusers" or name.startswith("diffusers.")):
-            continue
-        mod = sys.modules.get(name)
-        if mod is None:
-            continue
-        mod_file = getattr(mod, "__file__", "") or ""
-        mod_paths = getattr(mod, "__path__", None)
-        is_local = f"{_LOCAL_SRC / 'diffusers'}" in mod_file.replace("\\", "/")
-        if mod_paths is not None:
-            is_local = is_local or any(f"{_LOCAL_SRC / 'diffusers'}" in str(path) for path in mod_paths)
-        if is_local:
-            stashed[name] = sys.modules.pop(name)
-    original_path = sys.path[:]
-    try:
-        sys.path = [entry for entry in sys.path if Path(entry).resolve() != _LOCAL_SRC.resolve()]
-        module = importlib.import_module(module_path)
-        return getattr(module, attr_name)
-    finally:
-        sys.path = original_path
-        sys.modules.update(stashed)
-
-
-ConfigMixin = _load_upstream_attr("diffusers.configuration_utils", "ConfigMixin")
-SchedulerMixin = _load_upstream_attr("diffusers.schedulers.scheduling_utils", "SchedulerMixin")
-BaseOutput = _load_upstream_attr("diffusers.utils", "BaseOutput")
-register_to_config = _load_upstream_attr("diffusers.configuration_utils", "register_to_config")
+from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.schedulers.scheduling_utils import SchedulerMixin
+from diffusers.utils import BaseOutput
 
 
 @dataclass
@@ -48,7 +15,7 @@ class ContinuousFlowMatchSchedulerOutput(BaseOutput):
 
 
 class ContinuousFlowMatchScheduler(SchedulerMixin, ConfigMixin):
-    """Flow-matching scheduler for AFM/CAFM models with time in [1, 0]."""
+    """Flow-matching scheduler for AFM with time in [1, 0]."""
 
     order = 2
 

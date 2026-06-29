@@ -1,12 +1,41 @@
+import importlib
+import sys
+from pathlib import Path
 from typing import NamedTuple
 
 import torch
 
-from ..._hf import get_hf_attr
+_LOCAL_SRC = Path(__file__).resolve().parents[3]
 
-AutoencoderKL = get_hf_attr("diffusers.AutoencoderKL")
-DiagonalGaussianDistribution = get_hf_attr("diffusers.models.autoencoders.vae.DiagonalGaussianDistribution")
-apply_forward_hook = get_hf_attr("diffusers.utils.accelerate_utils.apply_forward_hook")
+
+def _load_upstream_attr(module_path: str, attr_name: str):
+    stashed = {}
+    for name in list(sys.modules):
+        if not (name == "diffusers" or name.startswith("diffusers.")):
+            continue
+        mod = sys.modules.get(name)
+        if mod is None:
+            continue
+        mod_file = getattr(mod, "__file__", "") or ""
+        mod_paths = getattr(mod, "__path__", None)
+        is_local = f"{_LOCAL_SRC / 'diffusers'}" in mod_file.replace("\\", "/")
+        if mod_paths is not None:
+            is_local = is_local or any(f"{_LOCAL_SRC / 'diffusers'}" in str(path) for path in mod_paths)
+        if is_local:
+            stashed[name] = sys.modules.pop(name)
+    original_path = sys.path[:]
+    try:
+        sys.path = [entry for entry in sys.path if Path(entry).resolve() != _LOCAL_SRC.resolve()]
+        module = importlib.import_module(module_path)
+        return getattr(module, attr_name)
+    finally:
+        sys.path = original_path
+        sys.modules.update(stashed)
+
+
+AutoencoderKL = _load_upstream_attr("diffusers", "AutoencoderKL")
+DiagonalGaussianDistribution = _load_upstream_attr("diffusers.models.autoencoders.vae", "DiagonalGaussianDistribution")
+apply_forward_hook = _load_upstream_attr("diffusers.utils.accelerate_utils", "apply_forward_hook")
 
 
 class AutoencoderOutput(NamedTuple):

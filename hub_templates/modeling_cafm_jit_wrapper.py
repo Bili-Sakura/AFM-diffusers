@@ -1,8 +1,7 @@
-from ...transformers.transformer_jit import JiTTransformer2DModel
+class CAFMJiTGenerator2DModel(JiTTransformer2DModel):
+    """JiT backbone with continuous adversarial flow velocity head."""
 
-
-class Generator(JiTTransformer2DModel):
-    def forward(self, x, y, t):
+    def forward(self, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         x_pred = super().forward(
             hidden_states=x,
             timestep=1.0 - t,

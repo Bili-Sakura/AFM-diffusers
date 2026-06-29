@@ -64,10 +64,18 @@ class Generator(nn.Module):
 
         extra = ("t_tgt_embedder.",)
         has_extra = any(key.startswith(extra) for key in state_dict)
+        has_t_embedder = any("t_embedder" in key for key in state_dict)
         remapped = remap_transformer_state_dict(state_dict, self._legacy_kwargs, extra_prefixes=extra)
         if self.use_t_tgt and not has_extra:
             strict = False
-        return super().load_state_dict(remapped, strict=strict)
+        if not has_t_embedder:
+            strict = False
+        out = super().load_state_dict(remapped, strict=strict)
+        if not has_t_embedder:
+            for name, param in self.named_parameters():
+                if "timestep_embedder" in name:
+                    param.data.zero_()
+        return out
 
     def forward(self, x, y, t_src=None, t_tgt=None):
         if self.use_t_src and t_src is not None:

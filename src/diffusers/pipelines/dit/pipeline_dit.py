@@ -18,19 +18,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
 import inspect
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+from diffusers.image_processor import VaeImageProcessor
+from diffusers.schedulers.scheduling_utils import KarrasDiffusionSchedulers
+from diffusers.utils import replace_example_docstring
+from diffusers.utils.torch_utils import randn_tensor
 
-from ..._hf import get_hf_attr
+_LOCAL_SRC = Path(__file__).resolve().parents[3]
 
-VaeImageProcessor = get_hf_attr("diffusers.image_processor.VaeImageProcessor")
-KarrasDiffusionSchedulers = get_hf_attr("diffusers.schedulers.KarrasDiffusionSchedulers")
-replace_example_docstring = get_hf_attr("diffusers.utils.replace_example_docstring")
-randn_tensor = get_hf_attr("diffusers.utils.torch_utils.randn_tensor")
-DiffusionPipeline = get_hf_attr("diffusers.pipelines.pipeline_utils.DiffusionPipeline")
-ImagePipelineOutput = get_hf_attr("diffusers.pipelines.pipeline_utils.ImagePipelineOutput")
+
+def _load_upstream_module(module_path: str):
+    stashed = {}
+    for name in list(sys.modules):
+        if not (name == "diffusers" or name.startswith("diffusers.")):
+            continue
+        mod = sys.modules.get(name)
+        if mod is None:
+            continue
+        mod_file = getattr(mod, "__file__", "") or ""
+        mod_paths = getattr(mod, "__path__", None)
+        is_local = f"{_LOCAL_SRC / 'diffusers'}" in mod_file.replace("\\", "/")
+        if mod_paths is not None:
+            is_local = is_local or any(f"{_LOCAL_SRC / 'diffusers'}" in str(path) for path in mod_paths)
+        if is_local:
+            stashed[name] = sys.modules.pop(name)
+    original_path = sys.path[:]
+    try:
+        sys.path = [entry for entry in sys.path if Path(entry).resolve() != _LOCAL_SRC.resolve()]
+        return importlib.import_module(module_path)
+    finally:
+        sys.path = original_path
+        sys.modules.update(stashed)
+
+
+_pipeline_utils = _load_upstream_module("diffusers.pipelines.pipeline_utils")
+DiffusionPipeline = _pipeline_utils.DiffusionPipeline
+ImagePipelineOutput = _pipeline_utils.ImagePipelineOutput
 
 EXAMPLE_DOC_STRING = """
     Examples:
@@ -195,7 +224,7 @@ class DiTPipeline(DiffusionPipeline):
             raise ValueError(f"Unsupported `output_type`: {output_type}")
 
         # Stage 2: define call parameters
-        device = self._execution_device
+        device = getattr(self, "_execution_device", None) or next(self.transformer.parameters()).device
         do_classifier_free_guidance = float(guidance_scale) > 1.0
         latent_h = height // self.vae_scale_factor
         latent_w = width // self.vae_scale_factor

@@ -56,7 +56,15 @@ class GeneratorDeep(nn.Module):
         from ._dit import remap_transformer_state_dict
 
         remapped = remap_transformer_state_dict(state_dict, self._legacy_kwargs)
-        return super().load_state_dict(remapped, strict=strict)
+        has_t_embedder = any("t_embedder" in key for key in state_dict)
+        if not has_t_embedder:
+            strict = False
+        out = super().load_state_dict(remapped, strict=strict)
+        if not has_t_embedder:
+            for name, param in self.named_parameters():
+                if "timestep_embedder" in name:
+                    param.data.zero_()
+        return out
 
     def forward(self, x, y, *args, **kwargs):
         hidden_states = self.transformer.pos_embed(x)
@@ -74,7 +82,9 @@ class GeneratorDeep(nn.Module):
                 )
 
         conditioning = self.transformer.transformer_blocks[0].norm1.emb(
-            None, y, hidden_dtype=hidden_states.dtype
+            torch.zeros(x.shape[0], device=x.device, dtype=torch.long),
+            y,
+            hidden_dtype=hidden_states.dtype,
         )
         shift, scale = self.transformer.proj_out_1(F.silu(conditioning)).chunk(2, dim=1)
         hidden_states = self.transformer.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]

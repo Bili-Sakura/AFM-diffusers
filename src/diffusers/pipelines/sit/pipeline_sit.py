@@ -14,20 +14,52 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
-
 import json
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
-
 from diffusers.image_processor import VaeImageProcessor
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
-from diffusers.schedulers import FlowMatchEulerDiscreteScheduler, KarrasDiffusionSchedulers
+from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+from diffusers.schedulers.scheduling_utils import KarrasDiffusionSchedulers
+from diffusers.utils import replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 
 from ...models.transformers.transformer_sit import SiTTransformer2DModel
+
+_LOCAL_SRC = Path(__file__).resolve().parents[3]
+
+
+def _load_upstream_module(module_path: str):
+    stashed = {}
+    for name in list(sys.modules):
+        if not (name == "diffusers" or name.startswith("diffusers.")):
+            continue
+        mod = sys.modules.get(name)
+        if mod is None:
+            continue
+        mod_file = getattr(mod, "__file__", "") or ""
+        mod_paths = getattr(mod, "__path__", None)
+        is_local = f"{_LOCAL_SRC / 'diffusers'}" in mod_file.replace("\\", "/")
+        if mod_paths is not None:
+            is_local = is_local or any(f"{_LOCAL_SRC / 'diffusers'}" in str(path) for path in mod_paths)
+        if is_local:
+            stashed[name] = sys.modules.pop(name)
+    original_path = sys.path[:]
+    try:
+        sys.path = [entry for entry in sys.path if Path(entry).resolve() != _LOCAL_SRC.resolve()]
+        return importlib.import_module(module_path)
+    finally:
+        sys.path = original_path
+        sys.modules.update(stashed)
+
+
+_pipeline_utils = _load_upstream_module("diffusers.pipelines.pipeline_utils")
+DiffusionPipeline = _pipeline_utils.DiffusionPipeline
+ImagePipelineOutput = _pipeline_utils.ImagePipelineOutput
 
 EXAMPLE_DOC_STRING = """
     Examples:
@@ -187,8 +219,9 @@ class SiTPipeline(DiffusionPipeline):
         self,
         class_labels: Union[int, str, List[Union[int, str]], torch.LongTensor],
     ) -> torch.LongTensor:
+        device = getattr(self, "_execution_device", None) or next(self.transformer.parameters()).device
         if torch.is_tensor(class_labels):
-            return class_labels.to(device=self._execution_device, dtype=torch.long).reshape(-1)
+            return class_labels.to(device=device, dtype=torch.long).reshape(-1)
 
         if isinstance(class_labels, int):
             class_label_ids = [class_labels]
@@ -199,7 +232,7 @@ class SiTPipeline(DiffusionPipeline):
         else:
             class_label_ids = list(class_labels)
 
-        return torch.tensor(class_label_ids, device=self._execution_device, dtype=torch.long).reshape(-1)
+        return torch.tensor(class_label_ids, device=device, dtype=torch.long).reshape(-1)
 
     def _default_image_size(self) -> int:
         return int(self.transformer.config.input_size) * self.vae_scale_factor
@@ -266,6 +299,7 @@ class SiTPipeline(DiffusionPipeline):
         return self.image_processor.postprocess(image, output_type=output_type)
 
     @torch.inference_mode()
+    @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
         class_labels: Union[int, str, List[Union[int, str]], torch.LongTensor],
@@ -297,18 +331,37 @@ class SiTPipeline(DiffusionPipeline):
                 `"pil"`, `"np"`, `"pt"`, or `"latent"`.
             return_dict (`bool`, defaults to `True`):
                 Return [`ImagePipelineOutput`] if True.
+
+        Examples:
+            <!-- this section is replaced by replace_example_docstring -->
         """
+        # Stage 1: check inputs
         default_size = self._default_image_size()
         height = int(height or default_size)
         width = int(width or default_size)
         self.check_inputs(height, width, num_inference_steps, output_type)
 
-        device = self._execution_device
+        # Stage 2: define call parameters
+        device = getattr(self, "_execution_device", None) or next(self.transformer.parameters()).device
         model_dtype = next(self.transformer.parameters()).dtype
-        class_labels_tensor = self._normalize_class_labels(class_labels)
-        batch_size = class_labels_tensor.numel()
         do_cfg = guidance_scale > 1.0
 
+        # Stage 3: encode class conditioning
+        class_labels_tensor = self._normalize_class_labels(class_labels)
+        batch_size = class_labels_tensor.numel()
+
+        # Stage 4: prepare timesteps
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
+        extra_step_kwargs = self.prepare_extra_step_kwargs(self.scheduler, generator=generator)
+        num_train_timesteps = self.scheduler.config.num_train_timesteps
+
+        if getattr(self.scheduler.config, "stochastic_sampling", False):
+            raise ValueError(
+                "SiT expects deterministic FlowMatchEulerDiscreteScheduler stepping "
+                "(scheduler.config.stochastic_sampling=False)."
+            )
+
+        # Stage 5: prepare latent variables
         latents = self.prepare_latents(
             batch_size=batch_size,
             height=height,
@@ -323,16 +376,9 @@ class SiTPipeline(DiffusionPipeline):
             null_labels = torch.full_like(class_labels_tensor, self.transformer.config.num_classes)
             labels = torch.cat([class_labels_tensor, null_labels], dim=0)
 
-        self.scheduler.set_timesteps(num_inference_steps, device=device)
-        extra_step_kwargs = self.prepare_extra_step_kwargs(self.scheduler, generator=generator)
-        num_train_timesteps = self.scheduler.config.num_train_timesteps
+        # Stage 6: prepare extra step kwargs (already done above)
 
-        if getattr(self.scheduler.config, "stochastic_sampling", False):
-            raise ValueError(
-                "SiT expects deterministic FlowMatchEulerDiscreteScheduler stepping "
-                "(scheduler.config.stochastic_sampling=False)."
-            )
-
+        # Stage 7: run denoising loop
         for t in self.progress_bar(self.scheduler.timesteps):
             flow_time = 1.0 - float(t) / num_train_timesteps
             if do_cfg:
@@ -365,3 +411,6 @@ class SiTPipeline(DiffusionPipeline):
         if not return_dict:
             return (image,)
         return ImagePipelineOutput(images=image)
+
+
+__all__ = ["SiTPipeline"]

@@ -1,121 +1,51 @@
-# Copyright 2026 The HuggingFace Team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Hub custom pipeline: CAFMSiTPipeline.
+
+Load with native Hugging Face diffusers and trust_remote_code=True.
+"""
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import json
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from diffusers.image_processor import VaeImageProcessor
-from diffusers.utils import replace_example_docstring
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.utils.torch_utils import randn_tensor
-
-from ...models.cafm.sit.generator import Generator
-from ...schedulers.scheduling_continuous_flow import ContinuousFlowMatchScheduler
-
-_LOCAL_SRC = Path(__file__).resolve().parents[3]
-
-
-def _load_upstream_module(module_path: str):
-    stashed = {}
-    for name in list(sys.modules):
-        if not (name == "diffusers" or name.startswith("diffusers.")):
-            continue
-        mod = sys.modules.get(name)
-        if mod is None:
-            continue
-        mod_file = getattr(mod, "__file__", "") or ""
-        mod_paths = getattr(mod, "__path__", None)
-        is_local = f"{_LOCAL_SRC / 'diffusers'}" in mod_file.replace("\\", "/")
-        if mod_paths is not None:
-            is_local = is_local or any(f"{_LOCAL_SRC / 'diffusers'}" in str(path) for path in mod_paths)
-        if is_local:
-            stashed[name] = sys.modules.pop(name)
-    original_path = sys.path[:]
-    try:
-        sys.path = [entry for entry in sys.path if Path(entry).resolve() != _LOCAL_SRC.resolve()]
-        return importlib.import_module(module_path)
-    finally:
-        sys.path = original_path
-        sys.modules.update(stashed)
-
-
-_pipeline_utils = _load_upstream_module("diffusers.pipelines.pipeline_utils")
-DiffusionPipeline = _pipeline_utils.DiffusionPipeline
-ImagePipelineOutput = _pipeline_utils.ImagePipelineOutput
-
-EXAMPLE_DOC_STRING = """
-    Examples:
-        ```py
-        >>> from pathlib import Path
-        >>> import torch
-        >>> from diffusers import DiffusionPipeline
-
-        >>> model_dir = Path("path/to/BiliSakura/CAFM-diffusers/CAFM-SiT-XL-2-256")
-        >>> pipe = DiffusionPipeline.from_pretrained(
-        ...     str(model_dir),
-        ...     local_files_only=True,
-        ...     custom_pipeline=str(model_dir / "pipeline.py"),
-        ...     trust_remote_code=True,
-        ...     torch_dtype=torch.float16,
-        ... )
-        >>> pipe = pipe.to("cuda")
-
-        >>> class_id = pipe.get_label_ids("golden retriever")[0]
-        >>> image = pipe(
-        ...     class_labels=class_id,
-        ...     num_inference_steps=250,
-        ...     sampler="heun",
-        ... ).images[0]
-        ```
-"""
 
 
 class CAFMSiTPipeline(DiffusionPipeline):
-    r"""
-    Pipeline for continuous adversarial flow model (CAFM) sampling with a SiT generator.
-
-    Parameters:
-        generator ([`Generator`]):
-            CAFM SiT generator that predicts flow velocity in latent space.
-        vae ([`AutoencoderKL`]):
-            Variational autoencoder used to decode latents to pixels.
-        scheduler ([`ContinuousFlowMatchScheduler`]):
-            Continuous flow-matching scheduler for Euler or Heun integration.
-        id2label (`dict[int, str]`, *optional*):
-            ImageNet class id to English label mapping. Values may contain comma-separated synonyms.
-    """
-
     model_cpu_offload_seq = "generator->vae"
+
+    @staticmethod
+    def _coerce_scheduler(scheduler, generator):
+        if scheduler is not None and not isinstance(scheduler, (list, tuple)):
+            return scheduler
+        variant_path = getattr(generator.config, "_name_or_path", None)
+        if variant_path:
+            scheduler_dir = Path(variant_path).resolve().parent / "scheduler"
+            module_path = scheduler_dir / "scheduling_continuous_flow.py"
+            config_path = scheduler_dir / "scheduler_config.json"
+            if module_path.is_file() and config_path.is_file():
+                spec = importlib.util.spec_from_file_location("scheduling_continuous_flow", module_path)
+                if spec is not None and spec.loader is not None:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    return module.ContinuousFlowMatchScheduler.from_pretrained(str(scheduler_dir))
+        raise ValueError("CAFMSiTPipeline could not load ContinuousFlowMatchScheduler from the variant folder.")
 
     def __init__(
         self,
-        generator: Generator,
+        generator,
         vae,
-        scheduler: Optional[ContinuousFlowMatchScheduler] = None,
+        scheduler=None,
         id2label: Optional[Dict[Union[int, str], str]] = None,
     ) -> None:
         super().__init__()
-        self.register_modules(
-            generator=generator,
-            vae=vae,
-            scheduler=scheduler or ContinuousFlowMatchScheduler(),
-        )
+        scheduler = self._coerce_scheduler(scheduler, generator)
+        self.register_modules(generator=generator, vae=vae, scheduler=scheduler)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self._id2label = self._normalize_id2label(id2label)
         self.labels = self._build_label2id(self._id2label)
@@ -159,7 +89,6 @@ class CAFMSiTPipeline(DiffusionPipeline):
 
     @property
     def id2label(self) -> Dict[int, str]:
-        r"""ImageNet class id to English label string (comma-separated synonyms)."""
         self._ensure_labels_loaded()
         return self._id2label
 
@@ -173,20 +102,10 @@ class CAFMSiTPipeline(DiffusionPipeline):
         self._labels_loaded_from_model_index = True
 
     def get_label_ids(self, label: Union[str, List[str]]) -> List[int]:
-        r"""
-        Map ImageNet label strings to class ids.
-
-        Args:
-            label (`str` or `list[str]`):
-                One or more English label strings. Each string must match a synonym in `id2label`.
-
-        Returns:
-            `list[int]`: Class ids for the provided labels.
-        """
         self._ensure_labels_loaded()
         labels = [label] if isinstance(label, str) else label
         if not self.labels:
-            raise ValueError("No English labels loaded. Provide `id2label` in the pipeline config.")
+            raise ValueError("No id2label mapping is available in this checkpoint.")
         missing = [item for item in labels if item not in self.labels]
         if missing:
             preview = ", ".join(list(self.labels.keys())[:8])
@@ -200,7 +119,6 @@ class CAFMSiTPipeline(DiffusionPipeline):
     ) -> torch.LongTensor:
         if torch.is_tensor(class_labels):
             return class_labels.to(device=device, dtype=torch.long).reshape(-1)
-
         if isinstance(class_labels, int):
             class_label_ids = [class_labels]
         elif isinstance(class_labels, str):
@@ -209,7 +127,6 @@ class CAFMSiTPipeline(DiffusionPipeline):
             class_label_ids = self.get_label_ids(class_labels)
         else:
             class_label_ids = list(class_labels)
-
         return torch.tensor(class_label_ids, device=device, dtype=torch.long).reshape(-1)
 
     def _default_image_size(self) -> int:
@@ -244,28 +161,6 @@ class CAFMSiTPipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]],
         latents: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        r"""
-        Prepare initial latent noise or validate pre-supplied latents.
-
-        Args:
-            batch_size (`int`):
-                Number of images to generate.
-            height (`int`):
-                Output image height in pixels.
-            width (`int`):
-                Output image width in pixels.
-            dtype (`torch.dtype`):
-                Latent tensor dtype.
-            device (`torch.device`):
-                Device for latent tensors.
-            generator (`torch.Generator` or `list[torch.Generator]`, *optional*):
-                RNG for reproducible sampling.
-            latents (`torch.Tensor`, *optional*):
-                Pre-generated latents. When provided, they are moved to `device`/`dtype`.
-
-        Returns:
-            `torch.Tensor`: Latent tensor of shape `(batch_size, in_channels, H//scale, W//scale)`.
-        """
         if latents is not None:
             return latents.to(device=device, dtype=dtype)
         latent_height = height // self.vae_scale_factor
@@ -278,18 +173,6 @@ class CAFMSiTPipeline(DiffusionPipeline):
         )
 
     def decode_latents(self, latents: torch.Tensor, output_type: str = "pil"):
-        r"""
-        Decode latent tensors to images.
-
-        Args:
-            latents (`torch.Tensor`):
-                Latent samples from the generator.
-            output_type (`str`, defaults to `"pil"`):
-                `"pil"`, `"np"`, `"pt"`, or `"latent"`.
-
-        Returns:
-            Decoded image batch in the requested format.
-        """
         if output_type == "latent":
             return latents
         scaling_factor = getattr(self.vae.config, "scaling_factor", 0.18215)
@@ -309,7 +192,6 @@ class CAFMSiTPipeline(DiffusionPipeline):
     ) -> torch.Tensor:
         self.scheduler.set_timesteps(num_inference_steps, device=device, solver=sampler)
         timesteps = self.scheduler.timesteps
-
         self.generator.eval()
         for t_src, t_tgt in self.progress_bar(list(zip(timesteps[:-1], timesteps[1:]))):
             t_src_batch = t_src.expand(batch_size)
@@ -317,11 +199,7 @@ class CAFMSiTPipeline(DiffusionPipeline):
             outputs = self.generator(latents, class_labels_tensor, t_src_batch)
             if sampler == "heun":
                 latents_next = self.scheduler.step(
-                    outputs,
-                    t_src,
-                    t_tgt,
-                    latents,
-                    prediction_type="v",
+                    outputs, t_src, t_tgt, latents, prediction_type="v"
                 ).prev_sample
                 outputs_next = self.generator(latents_next, class_labels_tensor, t_tgt_batch)
                 latents = self.scheduler.step(
@@ -334,16 +212,11 @@ class CAFMSiTPipeline(DiffusionPipeline):
                 ).prev_sample
             else:
                 latents = self.scheduler.step(
-                    outputs,
-                    t_src,
-                    t_tgt,
-                    latents,
-                    prediction_type="v",
+                    outputs, t_src, t_tgt, latents, prediction_type="v"
                 ).prev_sample
         return latents
 
     @torch.inference_mode()
-    @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
         class_labels: Union[int, str, List[Union[int, str]], torch.LongTensor],
@@ -356,49 +229,15 @@ class CAFMSiTPipeline(DiffusionPipeline):
         output_type: str = "pil",
         return_dict: bool = True,
     ) -> Union[ImagePipelineOutput, Tuple]:
-        r"""
-        Generate class-conditional images with a CAFM SiT checkpoint.
-
-        Args:
-            class_labels (`int`, `str`, `list[int]`, `list[str]`, or `torch.LongTensor`):
-                ImageNet class indices or human-readable English label strings.
-            height (`int`, *optional*):
-                Output image height in pixels. Defaults to the pretrained native resolution.
-            width (`int`, *optional*):
-                Output image width in pixels. Defaults to the pretrained native resolution.
-            num_inference_steps (`int`, defaults to `250`):
-                Number of flow integration steps.
-            sampler (`str`, defaults to `"heun"`):
-                ODE solver. One of `"euler"` or `"heun"`.
-            generator (`torch.Generator`, *optional*):
-                RNG for reproducibility.
-            latents (`torch.Tensor`, *optional*):
-                Pre-generated latent noise.
-            output_type (`str`, defaults to `"pil"`):
-                `"pil"`, `"np"`, `"pt"`, or `"latent"`.
-            return_dict (`bool`, defaults to `True`):
-                Return [`ImagePipelineOutput`] if True.
-
-        Examples:
-            <!-- this section is replaced by replace_example_docstring -->
-        """
-        # Stage 1: check inputs
         default_size = self._default_image_size()
         height = int(height or default_size)
         width = int(width or default_size)
         self.check_inputs(height, width, num_inference_steps, output_type, sampler)
 
-        # Stage 2: define call parameters
         device = getattr(self, "_execution_device", None) or next(self.generator.parameters()).device
         dtype = next(self.generator.parameters()).dtype
-
-        # Stage 3: encode class conditioning
         class_labels_tensor = self._normalize_class_labels(class_labels, device=device)
         batch_size = class_labels_tensor.shape[0]
-
-        # Stage 4: prepare timesteps (set inside denoising loop via scheduler.set_timesteps)
-
-        # Stage 5: prepare latent variables
         latents = self.prepare_latents(
             batch_size=batch_size,
             height=height,
@@ -408,10 +247,6 @@ class CAFMSiTPipeline(DiffusionPipeline):
             generator=generator,
             latents=latents,
         )
-
-        # Stage 6: prepare extra step kwargs (not used by ContinuousFlowMatchScheduler)
-
-        # Stage 7: run denoising loop
         latents = self._run_denoising_loop(
             latents,
             class_labels_tensor,
@@ -420,13 +255,8 @@ class CAFMSiTPipeline(DiffusionPipeline):
             num_inference_steps,
             sampler,
         )
-
         image = self.decode_latents(latents, output_type=output_type)
         self.maybe_free_model_hooks()
-
         if not return_dict:
             return (image,)
         return ImagePipelineOutput(images=image)
-
-
-__all__ = ["CAFMSiTPipeline"]

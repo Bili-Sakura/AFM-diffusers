@@ -3,17 +3,34 @@
 from __future__ import annotations
 
 import copy
+import importlib
+import sys
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
 import torch.nn.functional as F
 
-from ..._hf import get_hf_attr
-from ..transformers.transformer_sit import TimestepEmbedder
+_LOCAL_SRC = Path(__file__).resolve().parents[3]
+
+
+def _load_upstream_attr(module_path: str, attr_name: str):
+    stashed = {}
+    for name in list(sys.modules):
+        if name == "diffusers" or name.startswith("diffusers."):
+            stashed[name] = sys.modules.pop(name)
+    original_path = sys.path[:]
+    try:
+        sys.path = [entry for entry in sys.path if Path(entry).resolve() != _LOCAL_SRC.resolve()]
+        module = importlib.import_module(module_path)
+        return getattr(module, attr_name)
+    finally:
+        sys.path = original_path
+        sys.modules.update(stashed)
 
 
 def get_dit_transformer_class():
-    return get_hf_attr("diffusers.models.transformers.dit_transformer_2d.DiTTransformer2DModel")
+    return _load_upstream_attr("diffusers.models.transformers.dit_transformer_2d", "DiTTransformer2DModel")
 
 
 def build_dit_config(
@@ -56,12 +73,106 @@ def _dit_model_name(depth: int, patch_size: int, hidden_size: int, num_heads: in
     for name, preset in {
         "DiT-XL/2": (28, 2, 72),
         "DiT-L/2": (24, 2, 64),
+        "DiT-M/2": (16, 2, 64),
         "DiT-B/2": (12, 2, 64),
         "DiT-S/2": (12, 2, 64),
     }.items():
         if depth == preset[0] and patch_size == preset[1] and attention_head_dim == preset[2]:
             return name
     return None
+
+
+def _convert_legacy_dit_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    depth: int,
+) -> Dict[str, torch.Tensor]:
+    """Map a legacy facebookresearch/DiT checkpoint into Diffusers DiTTransformer2DModel keys."""
+    converted = copy.deepcopy(state_dict)
+
+    converted["pos_embed.proj.weight"] = converted.pop("x_embedder.proj.weight").clone().contiguous()
+    converted["pos_embed.proj.bias"] = converted.pop("x_embedder.proj.bias").clone().contiguous()
+
+    if "t_embedder.mlp.0.weight" in converted:
+        timestep_weights = {
+            "linear_1.weight": converted.pop("t_embedder.mlp.0.weight"),
+            "linear_1.bias": converted.pop("t_embedder.mlp.0.bias"),
+            "linear_2.weight": converted.pop("t_embedder.mlp.2.weight"),
+            "linear_2.bias": converted.pop("t_embedder.mlp.2.bias"),
+        }
+    else:
+        timestep_weights = None
+    class_embedding = converted.pop("y_embedder.embedding_table.weight")
+    if class_embedding.shape[0] == 1000:
+        null_class = torch.zeros(1, class_embedding.shape[1], dtype=class_embedding.dtype)
+        class_embedding = torch.cat([class_embedding, null_class], dim=0)
+
+    for block_idx in range(depth):
+        if timestep_weights is not None:
+            for key, tensor in timestep_weights.items():
+                converted[f"transformer_blocks.{block_idx}.norm1.emb.timestep_embedder.{key}"] = tensor.clone()
+        converted[f"transformer_blocks.{block_idx}.norm1.emb.class_embedder.embedding_table.weight"] = (
+            class_embedding.clone()
+        )
+
+        converted[f"transformer_blocks.{block_idx}.norm1.linear.weight"] = converted[
+            f"blocks.{block_idx}.adaLN_modulation.1.weight"
+        ]
+        converted[f"transformer_blocks.{block_idx}.norm1.linear.bias"] = converted[
+            f"blocks.{block_idx}.adaLN_modulation.1.bias"
+        ]
+
+        q, k, v = torch.chunk(converted[f"blocks.{block_idx}.attn.qkv.weight"], 3, dim=0)
+        q_bias, k_bias, v_bias = torch.chunk(converted[f"blocks.{block_idx}.attn.qkv.bias"], 3, dim=0)
+        converted[f"transformer_blocks.{block_idx}.attn1.to_q.weight"] = q
+        converted[f"transformer_blocks.{block_idx}.attn1.to_q.bias"] = q_bias
+        converted[f"transformer_blocks.{block_idx}.attn1.to_k.weight"] = k
+        converted[f"transformer_blocks.{block_idx}.attn1.to_k.bias"] = k_bias
+        converted[f"transformer_blocks.{block_idx}.attn1.to_v.weight"] = v
+        converted[f"transformer_blocks.{block_idx}.attn1.to_v.bias"] = v_bias
+        converted[f"transformer_blocks.{block_idx}.attn1.to_out.0.weight"] = converted[
+            f"blocks.{block_idx}.attn.proj.weight"
+        ]
+        converted[f"transformer_blocks.{block_idx}.attn1.to_out.0.bias"] = converted[
+            f"blocks.{block_idx}.attn.proj.bias"
+        ]
+        converted[f"transformer_blocks.{block_idx}.ff.net.0.proj.weight"] = converted[
+            f"blocks.{block_idx}.mlp.fc1.weight"
+        ]
+        converted[f"transformer_blocks.{block_idx}.ff.net.0.proj.bias"] = converted[
+            f"blocks.{block_idx}.mlp.fc1.bias"
+        ]
+        converted[f"transformer_blocks.{block_idx}.ff.net.2.weight"] = converted[
+            f"blocks.{block_idx}.mlp.fc2.weight"
+        ]
+        converted[f"transformer_blocks.{block_idx}.ff.net.2.bias"] = converted[
+            f"blocks.{block_idx}.mlp.fc2.bias"
+        ]
+
+        for suffix in (
+            "attn.qkv.weight",
+            "attn.qkv.bias",
+            "attn.proj.weight",
+            "attn.proj.bias",
+            "mlp.fc1.weight",
+            "mlp.fc1.bias",
+            "mlp.fc2.weight",
+            "mlp.fc2.bias",
+            "adaLN_modulation.1.weight",
+            "adaLN_modulation.1.bias",
+        ):
+            converted.pop(f"blocks.{block_idx}.{suffix}", None)
+
+    converted["proj_out_1.weight"] = converted.pop("final_layer.adaLN_modulation.1.weight")
+    converted["proj_out_1.bias"] = converted.pop("final_layer.adaLN_modulation.1.bias")
+    converted["proj_out_2.weight"] = converted.pop("final_layer.linear.weight")
+    converted["proj_out_2.bias"] = converted.pop("final_layer.linear.bias")
+
+    converted.pop("pos_embed", None)
+    for block_idx in range(depth):
+        for suffix in ("norm1.weight", "norm1.bias", "norm2.weight", "norm2.bias"):
+            converted.pop(f"blocks.{block_idx}.{suffix}", None)
+
+    return {key: tensor.detach().clone().contiguous() for key, tensor in converted.items()}
 
 
 def load_legacy_dit_state_dict(
@@ -73,12 +184,9 @@ def load_legacy_dit_state_dict(
 ) -> Dict[str, torch.Tensor]:
     if "transformer_blocks.0.attn1.to_q.weight" in state_dict:
         return state_dict
-    from ...dit_utils.conversion import convert_original_state_dict
-
-    model_name = _dit_model_name(depth, patch_size, hidden_size, num_heads)
-    if model_name is None:
-        return state_dict
-    return convert_original_state_dict(state_dict, model_name)
+    if any(key.startswith("blocks.") for key in state_dict):
+        return _convert_legacy_dit_state_dict(state_dict, depth)
+    return state_dict
 
 
 def forward_dit_output(
